@@ -1,0 +1,11 @@
+2025-04-17 14:08:20.699 | INFO     | __main__:handle_convert:269 - 开始下载 PDF: https://arxiv.org/pdf/2402.02370
+2025-04-17 14:08:21.434 | INFO     | __main__:handle_convert:274 - PDF 下载完成，已保存到: /Users/hs/workspace/MinerU2025/projects/gradio_app/download/2402.02370.pdf
+2025-04-17 14:08:21.889 | INFO     | magic_pdf.data.dataset:__init__:157 - lang: ch
+2025-04-17 14:08:23.026 | INFO     | magic_pdf.libs.pdf_check:detect_invalid_chars:67 - cid_count: 9, text_len: 47049, cid_chars_radio: 0.0001915382650889589
+2025-04-17 14:08:23.215 | INFO     | magic_pdf.model.pdf_extract_kit:__init__:68 - DocAnalysis init, this may take some times, layout_model: doclayout_yolo, apply_formula: True, apply_ocr: True, apply_table: True, table_model: rapid_table, lang: None
+2025-04-17 14:08:23.215 | INFO     | magic_pdf.model.pdf_extract_kit:__init__:82 - using device: cpu
+2025-04-17 14:08:23.215 | INFO     | magic_pdf.model.pdf_extract_kit:__init__:86 - using models_dir: /Users/hs/.cache/modelscope/hub/models/opendatalab/PDF-Extract-Kit-1___0/models
+2025-04-17 14:08:23.215 | INFO     | magic_pdf.model.pdf_extract_kit:__init__:164 - DocAnalysis init done!
+2025-04-17 14:08:23.215 | INFO     | magic_pdf.model.doc_analyze_by_custom_model:custom_model_init:116 - model init cost: 0.0020248889923095703
+2025-04-17 14:10:28.903 | INFO     | magic_pdf.tools.common:_do_parse:243 - local output dir is ./output/2402.02370_1744870101.439898/auto
+2025-04-17 14:10:29.017 | INFO     | __main__:to_markdown:125 - 压缩成功
