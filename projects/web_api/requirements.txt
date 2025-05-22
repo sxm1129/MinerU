@@ -3,3 +3,7 @@ magic-pdf[full]
 fastapi
 uvicorn
 python-multipart
+requests
+pytest
+httpx
+pytest-asyncio

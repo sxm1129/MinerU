@@ -5,10 +5,13 @@ from glob import glob
 from io import StringIO
 import tempfile
 from typing import Tuple, Union
+import requests
+import os
+from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from loguru import logger
 
 from magic_pdf.data.read_api import read_local_images, read_local_office
@@ -26,6 +29,14 @@ from fastapi import Form
 model_config.__use_inside_model__ = True
 
 app = FastAPI()
+
+# Define base paths for downloads and outputs
+DOWNLOAD_DIR = Path("downloaded_pdfs")
+OUTPUT_DIR_BASE = Path("output_markdown")
+
+# Create these directories if they don't exist
+DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+OUTPUT_DIR_BASE.mkdir(parents=True, exist_ok=True)
 
 pdf_extensions = [".pdf"]
 office_extensions = [".ppt", ".pptx", ".doc", ".docx"]
@@ -299,6 +310,211 @@ async def file_parse(
     except Exception as e:
         logger.exception(e)
         return JSONResponse(content={"error": str(e)}, status_code=500)
+
+
+from pydantic import BaseModel
+
+class ParseRequest(BaseModel):
+    pdf_url: str
+    parse_method: str = "auto"
+
+@app.post(
+    "/parse_pdf_from_url",
+    tags=["projects"],
+    summary="Download PDF from URL and parse it",
+)
+async def parse_pdf_from_url(request: ParseRequest):
+    try:
+        pdf_url = request.pdf_url
+        parse_method = request.parse_method
+
+        # Validate URL (basic check)
+        if not pdf_url.startswith(("http://", "https://")):
+            raise HTTPException(status_code=400, detail="Invalid URL scheme. Must be http or https.")
+
+        # Generate filename from URL
+        try:
+            url_path = Path(pdf_url.split("?")[0]) # Ignore query params for filename
+            filename = url_path.name
+            if not filename:
+                raise ValueError("Could not determine filename from URL")
+            # Sanitize filename (basic sanitization)
+            filename = "".join(c if c.isalnum() or c in ['.', '_', '-'] else '_' for c in filename)
+            if not any(filename.lower().endswith(ext) for ext in pdf_extensions + office_extensions + image_extensions):
+                # If no extension or unknown, try to infer or default
+                # For now, let's assume it's a PDF if no clear extension is found in URL path
+                # A more robust solution would check Content-Type header after download
+                filename = filename + ".pdf"
+
+
+        except Exception as e:
+            logger.error(f"Error generating filename from URL: {pdf_url} - {e}")
+            raise HTTPException(status_code=400, detail=f"Could not determine a valid filename from URL: {pdf_url}")
+
+
+        download_path = DOWNLOAD_DIR / filename
+        filename_without_ext = Path(filename).stem
+        
+        output_path = OUTPUT_DIR_BASE / filename_without_ext
+        output_image_path = output_path / "images"
+
+        # Download the PDF
+        logger.info(f"Downloading PDF from {pdf_url} to {download_path}")
+        try:
+            response = requests.get(pdf_url, stream=True, timeout=30) # Added timeout
+            response.raise_for_status()  # Raise an exception for bad status codes
+            with open(download_path, "wb") as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            logger.info(f"Successfully downloaded {filename}")
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error downloading PDF from {pdf_url}: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to download PDF from URL: {e}")
+
+        # Read the downloaded file bytes
+        with open(download_path, "rb") as f:
+            file_bytes = f.read()
+        
+        file_extension = os.path.splitext(filename)[1].lower()
+
+        if not file_extension in pdf_extensions + office_extensions + image_extensions:
+             # Attempt to get content type if extension is missing or ambiguous
+            content_type = response.headers.get('Content-Type', '').lower()
+            logger.info(f"File extension not in known list. Content-Type: {content_type}")
+            if 'pdf' in content_type:
+                file_extension = '.pdf'
+                download_path = download_path.rename(download_path.with_suffix('.pdf'))
+                filename = filename + ".pdf"
+            elif 'officedocument' in content_type or 'presentationml' in content_type or 'wordprocessingml' in content_type:
+                # More specific checks can be added here based on typical office MIME types
+                # For now, this is a generic catch. Defaulting to .docx if unsure, or could error out.
+                # file_extension = '.docx' # Example
+                # download_path = download_path.rename(download_path.with_suffix('.docx'))
+                # filename = filename + ".docx"
+                # For now, let's raise an error if we can't determine office type clearly
+                 raise HTTPException(status_code=400, detail=f"Downloaded file from {pdf_url} has an ambiguous or unsupported office content type: {content_type}. Please ensure URL points to a standard PDF, Word, PowerPoint or Image file.")
+            elif 'image' in content_type:
+                if 'jpeg' in content_type or 'jpg' in content_type:
+                    file_extension = '.jpg'
+                elif 'png' in content_type:
+                    file_extension = '.png'
+                else:
+                    raise HTTPException(status_code=400, detail=f"Downloaded file from {pdf_url} is an unsupported image type: {content_type}")
+                download_path = download_path.rename(download_path.with_suffix(file_extension))
+                filename = filename + file_extension
+            else:
+                os.remove(download_path) # Clean up downloaded file
+                raise HTTPException(status_code=400, detail=f"Downloaded file from {pdf_url} does not have a recognized extension and its content type ('{content_type}') is not supported. Please ensure the URL points to a PDF, Office, or image file.")
+
+
+        # Initialize writers
+        # Note: init_writers expects either file_path (for local/S3) or file (UploadFile)
+        # Since we've downloaded the file, we can use the file_path argument.
+        # However, init_writers also reads the file bytes itself if given a file_path.
+        # We already have file_bytes, so we might need to adjust or ensure it works as expected.
+        # For now, we'll pass file_path and let it re-read, or adapt init_writers if this is inefficient.
+        # A cleaner way would be to modify init_writers or have a new function that accepts file_bytes directly
+        # for this use case.
+        # Let's try to use the existing init_writers by providing the download_path.
+
+        writer, image_writer, _ , _ = init_writers( # file_bytes and file_extension are re-derived by init_writers
+            file_path=str(download_path), # init_writers expects str for local paths
+            output_path=str(output_path),
+            output_image_path=str(output_image_path),
+        )
+        
+        # Re-read file_bytes as init_writers might not return it when file_path is given
+        # or ensure the instance of init_writers correctly loads it.
+        # For safety, re-reading here:
+        with open(download_path, "rb") as f:
+            file_bytes_for_process = f.read()
+        
+        # file_extension was already determined
+        
+        # Process PDF
+        logger.info(f"Processing downloaded file: {download_path} with parse_method: {parse_method}")
+        infer_result, pipe_result = process_file(
+            file_bytes=file_bytes_for_process,
+            file_extension=file_extension,
+            parse_method=parse_method,
+            image_writer=image_writer,
+        )
+
+        # Save the MD content to a file
+        md_file_name = f"{filename_without_ext}.md"
+        md_file_path = output_path / md_file_name
+        
+        # Ensure output_path (which is now a directory per file) exists
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        md_content_writer = MemoryDataWriter()
+        pipe_result.dump_md(md_content_writer, "", "images") # relative image path
+        md_content = md_content_writer.get_value()
+        
+        with open(md_file_path, "w", encoding="utf-8") as f:
+            f.write(md_content)
+        logger.info(f"Markdown content saved to {md_file_path}")
+
+        md_content_writer.close()
+        
+        # Also save other JSON outputs if is_json_md_dump behavior is desired (currently not a param for this endpoint)
+        # For example:
+        # content_list_writer = MemoryDataWriter()
+        # pipe_result.dump_content_list(content_list_writer, "", "images")
+        # with open(output_path / f"{filename_without_ext}_content_list.json", "w", encoding="utf-8") as f:
+        #     f.write(content_list_writer.get_value())
+        # content_list_writer.close()
+
+
+        return JSONResponse(
+            content={
+                "message": "File processed successfully from URL.",
+                "downloaded_pdf_path": str(download_path),
+                "markdown_file_path": str(md_file_path),
+                "md_content": md_content, # Optionally return md_content directly
+                # Add other relevant info from pipe_result or infer_result if needed
+            },
+            status_code=200,
+        )
+
+    except HTTPException as he:
+        logger.error(f"HTTPException in /parse_pdf_from_url: {he.detail}")
+        raise he # Re-raise HTTPException to let FastAPI handle it
+    except Exception as e:
+        logger.exception(f"Unexpected error in /parse_pdf_from_url: {e}")
+        return JSONResponse(content={"error": f"An unexpected error occurred: {str(e)}"}, status_code=500)
+
+@app.get(
+    "/get_pdf/{filename:path}",
+    tags=["projects"],
+    summary="Serve a downloaded PDF file",
+)
+async def get_pdf(filename: str):
+    try:
+        # Construct the full path to the PDF file
+        pdf_path = DOWNLOAD_DIR / filename
+
+        # Check if the file exists
+        if not pdf_path.is_file():
+            logger.error(f"PDF file not found: {pdf_path}")
+            raise HTTPException(status_code=404, detail="PDF not found")
+
+        # Return the file as a response
+        # The media_type 'application/pdf' tells the browser to display the PDF if possible,
+        # or download it. 'filename' suggests the name for the downloaded file.
+        return FileResponse(
+            path=str(pdf_path),
+            media_type='application/pdf',
+            filename=filename
+        )
+
+    except HTTPException as he:
+        # Re-raise HTTPException to let FastAPI handle it
+        raise he
+    except Exception as e:
+        logger.exception(f"Unexpected error in /get_pdf/{filename}: {e}")
+        # Return a generic 500 error for other issues
+        raise HTTPException(status_code=500, detail=f"An unexpected error occurred while trying to serve the PDF: {str(e)}")
 
 
 if __name__ == "__main__":

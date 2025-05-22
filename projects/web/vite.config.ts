@@ -8,7 +8,7 @@ export default defineConfig({
   server: {
     proxy: {
       "/api": {
-        target: "http://localhost:5559",
+        target: "http://localhost:8888", // Changed port to 8888 for the new PDF processing API
         changeOrigin: true,
       },
     },
